@@ -1,59 +1,113 @@
-import { createPublicClient, createWalletClient, http } from "viem";
-import { localhost } from "viem/chains";
-import hre from "hardhat";
+import hre, { ignition } from "hardhat";
+const {
+  loadFixture,
+} = require("@nomicfoundation/hardhat-toolbox/network-helpers");
+const { expect } = require("chai");
+import { auctionModule } from "../ignition/modules/auctiondeployment";
 
-describe("Auction Testing", () => {
-  describe("Validating Input Values", () => {
-    async function setUpSmartContracts() {
-      // Create wallet and public clients
-      const walletClient = createWalletClient({
-        chain: { ...localhost, id: 31337 },
-        transport: http(),
-      });
+describe("Auction", () => {
+  async function setUpSmartContracts() {
+    // ...
+    var [owner, alice, bob, carl, dave] = await hre.ethers.getSigners();
 
-      const publicClient = createPublicClient({
-        chain: localhost,
-        transport: http(),
-      });
+    // Smart contract deployment
+    var usdc = await hre.ethers.deployContract("USDCMockCoin", [owner]);
 
-      // Get signer (first testing account)
-      const [owner, minter] = await walletClient.getAddresses();
+    const { auction } = await ignition.deploy(auctionModule, {
+      parameters: {
+        DeployAuction: {
+          initialOwner: owner.address,
+          usdcAddress: await usdc.getAddress(),
+        },
+      },
+    });
+    var auctionAddress = await auction.getAddress();
 
-      // Dynamically load contract artifacts
-      const usdcArtifact = await hre.artifacts.readArtifact("USDCMockCoin");
-      const auctionArtifact = await hre.artifacts.readArtifact("Auction");
-      const heartsArtifact = await hre.artifacts.readArtifact("HeartsNFT");
+    var nft = await hre.ethers.deployContract("HeartsNFT", [
+      owner.address,
+      owner.address,
+    ]);
 
-      const usdcHash = await walletClient.deployContract({
-        abi: usdcArtifact.abi,
-        bytecode: usdcArtifact.bytecode as `0x${string}`,
-        args: [owner],
-        account: owner,
-      });
+    const ONE_MILLION_USDC = 1000000000000n;
+    await usdc.mint(alice.address, ONE_MILLION_USDC);
+    await usdc.mint(bob.address, ONE_MILLION_USDC);
 
-      const usdcReceipt = await publicClient.waitForTransactionReceipt({
-        hash: usdcHash,
-      });
+    // alice and bob give USDC allowance to the Auction contract
+    await usdc.connect(alice).approve(auctionAddress, ONE_MILLION_USDC);
+    await usdc.connect(bob).approve(auctionAddress, ONE_MILLION_USDC);
 
-      console.log(usdcReceipt.contractAddress);
-      // Deploy the auction contract
-      await walletClient.deployContract({
-        abi: auctionArtifact.abi,
-        bytecode: auctionArtifact.bytecode as `0x${string}`,
-        args: [owner, usdcReceipt.contractAddress],
-        account: owner,
-      });
+    // carl and dave receive both an NFT
+    await nft.safeMint(carl.address); // id: 0
+    await nft.safeMint(dave.address); // id: 1
 
-      await walletClient.deployContract({
-        abi: heartsArtifact.abi,
-        bytecode: heartsArtifact.bytecode as `0x${string}`,
-        args: [owner, minter],
-        account: owner,
-      });
-    }
+    var tokenIdCarl = 0;
+    var tokenIdDave = 1;
 
+    // give allowance to both carl and dave's NFTs to the auction contract
+    await nft.connect(carl).approve(auctionAddress, tokenIdCarl);
+    await nft.connect(dave).approve(auctionAddress, tokenIdDave);
+
+    return {
+      auction,
+      nft,
+      usdc,
+      owner,
+      alice,
+      bob,
+      carl,
+      dave,
+      tokenIdCarl,
+      tokenIdDave,
+    };
+  }
+
+  describe("Auction Creation", () => {
     it("USDC Address should be the same", async () => {
-      await setUpSmartContracts();
+      const { usdc, auction } = await loadFixture(setUpSmartContracts);
+
+      expect(await usdc.getAddress()).to.be.equal(await auction.usdcToken());
+    });
+
+    it("Auction counter increases in one", async () => {
+      const { auction, nft, carl, tokenIdCarl } = await loadFixture(
+        setUpSmartContracts
+      );
+      var prevAuctionCounter = await auction.auctionCounter();
+
+      var nftAddress = await nft.getAddress();
+      var duration = 10 * 60; // ten minutes
+      await auction
+        .connect(carl)
+        .createAuction(nftAddress, tokenIdCarl, duration);
+
+      var afterAuctionCounter = await auction.auctionCounter();
+
+      expect(afterAuctionCounter - prevAuctionCounter).to.equal(
+        1,
+        "Counter does not increase in one"
+      );
+    });
+
+    it("NFT is transferred to the contract", async () => {
+      const { auction, nft, carl, tokenIdCarl } = await loadFixture(
+        setUpSmartContracts
+      );
+
+      expect(await nft.ownerOf(tokenIdCarl)).to.equal(
+        carl.address,
+        "Prior owner incorrect"
+      );
+
+      var nftAddress = await nft.getAddress();
+      var duration = 10 * 60; // ten minutes
+      await auction
+        .connect(carl)
+        .createAuction(nftAddress, tokenIdCarl, duration);
+
+      expect(await nft.ownerOf(tokenIdCarl)).to.equal(
+        await auction.getAddress(),
+        "Current owner incorrect"
+      );
     });
   });
 });
