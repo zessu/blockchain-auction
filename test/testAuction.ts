@@ -1,9 +1,25 @@
 import hre, { ignition } from "hardhat";
 const {
   loadFixture,
+  time,
 } = require("@nomicfoundation/hardhat-toolbox/network-helpers");
 const { expect } = require("chai");
 import { auctionModule } from "../ignition/modules/auctiondeployment";
+import { HeartsNFT, USDCMockCoin } from "../typechain-types";
+import { Contract } from "ethers";
+
+type auctionReturn = {
+  auction: Contract;
+  nft: HeartsNFT;
+  usdc: USDCMockCoin;
+  owner: string;
+  alice: string;
+  bob: string;
+  carl: string;
+  dave: string;
+  tokenIdCarl: number;
+  tokenIdDave: number;
+};
 
 describe("Auction", () => {
   async function setUpSmartContracts() {
@@ -108,6 +124,68 @@ describe("Auction", () => {
         await auction.getAddress(),
         "Current owner incorrect"
       );
+    });
+  });
+
+  describe("Saving an auction", () => {
+    it("saves all the details correctly", async () => {
+      const { auction, nft, carl, owner, tokenIdCarl } = await loadFixture(
+        setUpSmartContracts
+      );
+
+      // comparison object
+      type TestCases = {
+        nftAddress: string | null;
+        tokenId: string | null;
+        biddingEndTime: number | null;
+        highestBidder: string | null;
+        highestBid: number | null;
+        auctionEnded: boolean | null;
+        auctionCreator: string | null;
+      };
+
+      let testCases = {
+        nftAddress: null,
+        tokenId: null,
+        biddingEndTime: null,
+        highestBidder: null,
+        highestBid: null,
+        auctionEnded: null,
+        auctionCreator: null,
+      } as TestCases;
+
+      const nftAddress = await nft.getAddress();
+      const duration = 10 * 60;
+
+      await auction
+        .connect(carl)
+        .createAuction(nftAddress, tokenIdCarl, duration);
+
+      const highestBidder = hre.ethers.ZeroAddress;
+      const highestBid = 0;
+      const auctionEnded = false;
+      const auctionCreator = carl.address;
+      const lastBlockTime = await time.latest(); // checked after auction run
+      const biggingEndTime = lastBlockTime + duration;
+
+      testCases["nftAddress"] = nftAddress;
+      testCases["tokenId"] = tokenIdCarl;
+      testCases["biddingEndTime"] = biggingEndTime;
+      testCases["highestBidder"] = highestBidder;
+      testCases["highestBid"] = highestBid;
+      testCases["auctionEnded"] = auctionEnded;
+      testCases["auctionCreator"] = auctionCreator;
+
+      // check that the auction at index 1 has similar properties
+
+      const auctionResponse = await auction.auctions(1);
+      expect(auctionResponse.nftAddress).to.equal(testCases.nftAddress);
+      expect(auctionResponse.tokenId).to.equal(testCases.tokenId);
+      expect(auctionResponse.biddingEndTime).to.equal(testCases.biddingEndTime);
+      expect(auctionResponse.highestBidder).to.equal(testCases.highestBidder);
+      expect(auctionResponse.highestBid).to.equal(testCases.highestBid);
+      expect(auctionResponse.auctionEnded).to.equal(testCases.auctionEnded);
+      expect(auctionResponse.auctionCreator).to.equal(testCases.auctionCreator);
     });
   });
 });
