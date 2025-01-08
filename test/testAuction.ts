@@ -283,19 +283,165 @@ describe("Auction", () => {
       expect(auctionDetails.highestBid).to.equal(TEN_USDC);
     });
 
-     it("should emit bid placed event", async () => {
-       const TEN_USDC = 10000000n;
-       await expect(auction.connect(alice).placeBid(auctionId, TEN_USDC))
-         .to.emit(auction, "BidPlaced")
-         .withArgs(auctionId, alice.address, TEN_USDC);
-     });
+    it("should emit bid placed event", async () => {
+      const TEN_USDC = 10000000n;
+      await expect(auction.connect(alice).placeBid(auctionId, TEN_USDC))
+        .to.emit(auction, "BidPlaced")
+        .withArgs(auctionId, alice.address, TEN_USDC);
+    });
   });
 
   describe("End Auction", () => {
-    it("", async () => {});
+    let auction: Auction;
+    let nft: HeartsNFT;
+    let usdc: USDCMockCoin;
+    let alice: HardhatEthersSigner;
+    let bob: HardhatEthersSigner;
+    let carl: HardhatEthersSigner;
+    let tokenIdCarl: number;
+    let auctionId = 1;
+    let biddingEndTime: number;
+
+    beforeEach(async () => {
+      ({ auction, nft, carl, tokenIdCarl, alice, usdc, bob } =
+        await loadFixture(setUpSmartContracts));
+
+      const nftAddress = await nft.getAddress();
+      const duration = 10 * 60; // ten minutes
+      const currentTime = await time.latest();
+      biddingEndTime = currentTime + duration;
+
+      await auction
+        .connect(carl)
+        .createAuction(nftAddress, tokenIdCarl, duration);
+
+      // Place a bid from alice
+      const TEN_USDC = 10000000n;
+      await auction.connect(alice).placeBid(auctionId, TEN_USDC);
+    });
+
+    it("reverts if auction is already ended", async () => {
+      // Fast forward past the bidding end time
+      await time.increase(15 * 60); // 15 minutes
+
+      // End auction first time
+      await auction.endAuction(auctionId);
+
+      // Try to end it again
+      await expect(auction.endAuction(auctionId)).to.be.revertedWithCustomError(
+        auction,
+        "AuctionAlreadyEnded"
+      );
+    });
+
+    it("transfers NFT to highest bidder", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      await auction.endAuction(auctionId);
+
+      const nftOwner = await nft.ownerOf(tokenIdCarl);
+      expect(nftOwner).to.equal(alice.address);
+    });
+
+    it("transfers USDC to auction creator", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      const TEN_USDC = 10000000n;
+
+      await expect(auction.endAuction(auctionId)).to.changeTokenBalances(
+        usdc,
+        [await auction.getAddress(), carl.address],
+        [-TEN_USDC, TEN_USDC]
+      );
+    });
+
+    it("emits AuctionEnded event", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      const TEN_USDC = 10000000n;
+
+      await expect(auction.endAuction(auctionId))
+        .to.emit(auction, "AuctionEnded")
+        .withArgs(auctionId, alice.address, TEN_USDC);
+    });
+
+    it("updates auction state to ended", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      await auction.endAuction(auctionId);
+
+      const auctionDetails = await auction.auctions(auctionId);
+      expect(auctionDetails.auctionEnded).to.be.true;
+    });
   });
 
   describe("Withdraw", () => {
-    it("", async () => {});
+    let auction: Auction;
+    let nft: HeartsNFT;
+    let usdc: USDCMockCoin;
+    let alice: HardhatEthersSigner;
+    let bob: HardhatEthersSigner;
+    let carl: HardhatEthersSigner;
+    let tokenIdCarl: number;
+    let auctionId = 1;
+
+    beforeEach(async () => {
+      ({ auction, nft, carl, tokenIdCarl, alice, usdc, bob } =
+        await loadFixture(setUpSmartContracts));
+
+      const nftAddress = await nft.getAddress();
+      const duration = 10 * 60; // ten minutes
+
+      await auction
+        .connect(carl)
+        .createAuction(nftAddress, tokenIdCarl, duration);
+
+      // Place bids from alice and bob
+      await auction.connect(alice).placeBid(auctionId, 10000000n); // 10 USDC
+      await auction.connect(bob).placeBid(auctionId, 20000000n); // 20 USDC - winning bid
+    });
+
+    it("reverts if auction has not ended", async () => {
+      await expect(
+        auction.connect(alice).withdraw(auctionId)
+      ).to.be.revertedWithCustomError(auction, "AuctionDidNotEnd");
+    });
+
+    it("reverts if there are no funds to withdraw", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      await auction.endAuction(auctionId);
+      await expect(
+        auction.connect(carl).withdraw(auctionId)
+      ).to.be.revertedWithCustomError(auction, "NoFundsToWitdraw");
+    });
+
+    it("allows losing bidder to withdraw their bid", async () => {
+      const TEN_USDC = 10000000n;
+      await time.increase(15 * 60); // 15 minutes
+      await auction.endAuction(auctionId);
+
+      await expect(
+        auction.connect(alice).withdraw(auctionId)
+      ).to.changeTokenBalances(
+        usdc,
+        [await auction.getAddress(), alice.address],
+        [-TEN_USDC, TEN_USDC]
+      );
+    });
+
+    it("sets bid amount to zero after withdrawal", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      await auction.endAuction(auctionId);
+      await auction.connect(alice).withdraw(auctionId);
+
+      const aliceBid = await auction.bids(alice.address, auctionId);
+      expect(aliceBid).to.equal(0);
+    });
+
+    it("doesn't allow double withdrawal", async () => {
+      await time.increase(15 * 60); // 15 minutes
+      await auction.endAuction(auctionId);
+      await auction.connect(alice).withdraw(auctionId);
+
+      await expect(
+        auction.connect(alice).withdraw(auctionId)
+      ).to.be.revertedWithCustomError(auction, "NoFundsToWitdraw");
+    });
   });
 });
